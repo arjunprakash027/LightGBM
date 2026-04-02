@@ -1145,3 +1145,30 @@ def test_booster_eval_adds_new_valid_dataset() -> None:
     assert metric_name == "binary_error"
     assert metric_value >= 0.40
     assert maximize is False
+
+def test_refit_does_not_warn_about_categorical_features(rng, tmp_path) -> None:
+    X = rng.uniform(size=(100, 1))
+    y = rng.uniform(size=(100))
+    params = {"verbose": -1}
+    categorical_feature = [0]
+
+    train_data = lgb.Dataset(X, label=y, categorical_feature=categorical_feature)
+    bst = lgb.train(params, train_data, num_boost_round=1)
+
+    model_file = tmp_path / "sample_model.txt"
+    bst.save_model(model_file)
+
+    loaded_bst = lgb.Booster(model_file=model_file)
+    # Check if the categorical feature is preserved after loading from saved model text file
+    assert loaded_bst.params.get('categorical_feature') == categorical_feature
+
+    # Check if proper error message is raised when refitting with categorical feature
+    with pytest.raises(lgb.basic.LightGBMError) as excinfo:
+        loaded_bst.refit(X, label=y, categorical_feature=[1])
+    assert "Using refit() to change which columns are treated as categorical is not supported." in str(excinfo.value)
+
+    # Check if refitting without categorical feature works fine
+    loaded_bst.refit(X, label=y)
+    assert loaded_bst.params.get('categorical_feature') == categorical_feature
+
+    

@@ -4907,17 +4907,22 @@ class Booster:
         )
         new_params["linear_tree"] = bool(out_is_linear.value)
         new_params.update(dataset_params)
-        args_names = inspect.signature(Dataset._lazy_init).parameters.keys()
-        refit_signature = inspect.signature(self.__class__.refit).parameters
-        for lazy_init_args in args_names:
-            if lazy_init_args in refit_signature:
-                default_val = refit_signature[lazy_init_args].default
-                current_val = locals().get(lazy_init_args)
-                is_default = current_val is default_val
-
-                if is_default:
-                    locals()[lazy_init_args] = new_params.get(lazy_init_args, current_val)
-                    new_params.pop(lazy_init_args, None)
+        # 'categorical_feature' can end up in self.params when a Booster
+        # is created from a model string or file... pre-process to ensure it's passed
+        # via a keyword argument to the Dataset constructor instead of 'params'.
+        if "categorical_feature" in new_params:
+            cat_features_from_params = new_params.pop("categorical_feature")
+            if categorical_feature == "auto" or cat_features_from_params == categorical_feature:
+                categorical_feature = cat_features_from_params
+            else:
+                error_msg = (
+                    "'categorical_feature' value passed to Booster.refit() is different from  "
+                    "'categorical_feature' value found in Booster.params. "
+                    "Preferring the value passed via keyword argument. "
+                    "Using refit() to change which columns are treated as categorical is not supported. "
+                    "If you have a valid use case for this, please open an issue at https://github.com/lightgbm-org/LightGBM/issues."
+                )
+                raise LightGBMError(error_msg)
         train_set = Dataset(
             data=data,
             label=label,
