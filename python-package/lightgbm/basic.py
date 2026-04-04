@@ -4913,7 +4913,7 @@ class Booster:
         # via a keyword argument to the Dataset constructor instead of 'params'.
         new_params = _choose_param_value(
             main_param_name="categorical_feature",
-            params=self.params,
+            params=new_params,
             default_value=None,
         )
         cat_features_from_params = new_params.pop("categorical_feature")
