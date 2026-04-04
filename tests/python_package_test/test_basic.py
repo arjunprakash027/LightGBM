@@ -2,6 +2,7 @@
 import filecmp
 import numbers
 import re
+import warnings
 from copy import deepcopy
 from os import getenv
 from pathlib import Path
@@ -1146,29 +1147,65 @@ def test_booster_eval_adds_new_valid_dataset() -> None:
     assert metric_value >= 0.40
     assert maximize is False
 
-def test_refit_does_not_warn_about_categorical_features(rng, tmp_path) -> None:
-    X = rng.uniform(size=(100, 1))
-    y = rng.uniform(size=(100))
-    params = {"verbose": -1}
-    categorical_feature = [0]
 
-    train_data = lgb.Dataset(X, label=y, categorical_feature=categorical_feature)
-    bst = lgb.train(params, train_data, num_boost_round=1)
+def test_refit_correctly_handles_categorical_features_in_params(rng) -> None:
+    rng = np.random.default_rng()
+    X = rng.integers(1, 10, size=(1_000, 3))
+    y = rng.uniform(size=(X.shape[0],))
 
-    model_file = tmp_path / "sample_model.txt"
-    bst.save_model(model_file)
+    # Dataset with 'categorical_feature" keyword arg
+    dtrain = lgb.Dataset(X, label=y, categorical_feature=[0, 2])
+    bst = lgb.train(
+        params={
+            "num_leaves": 7,
+            "verbose": -1,
+        },
+        train_set=dtrain,
+        num_boost_round=2,
+    )
 
-    loaded_bst = lgb.Booster(model_file=model_file)
-    # Check if the categorical feature is preserved after loading from saved model text file
-    assert loaded_bst.params.get('categorical_feature') == categorical_feature
+    # 'categorical_column' is correctly set in params
+    assert bst.params["categorical_column"] == [0, 2]
 
-    # Check if proper error message is raised when refitting with categorical feature
-    with pytest.raises(lgb.basic.LightGBMError) as excinfo:
-        loaded_bst.refit(X, label=y, categorical_feature=[1])
-    assert "Using refit() to change which columns are treated as categorical is not supported." in str(excinfo.value)
+    # refit() should not raise a warning
+    X_new = rng.integers(1, 10, size=(10, 3))
+    y_new = rng.uniform(size=(X_new.shape[0],))
+    with warnings.catch_warnings() as w:
+        warnings.simplefilter("always")
+        bst.refit(X_new, y_new)
+        if w:
+            assert not any(
+                re.search(r"has been found in .*params.* and will be ignored", str(warning.message)) for warning in w
+            )
 
-    # Check if refitting without categorical feature works fine
-    loaded_bst.refit(X, label=y)
-    assert loaded_bst.params.get('categorical_feature') == categorical_feature
+    # round-trip to and from a model string
+    loaded_bst = lgb.Booster(model_str=bst.model_to_string())
 
-    
+    # that round-trip sets Booster.params to all model parameters, using the "main"
+    # ones, not any aliases
+    assert loaded_bst.params["categorical_feature"] == [0, 2]
+    assert "categorical_column" not in loaded_bst.params
+
+    # case 1: 'categorical_feature' keyword arg not passed
+    # result: should succeed and not warn
+    loaded_bst_new = loaded_bst.refit(X_new, y_new)
+    assert loaded_bst_new.params["categorical_column"] == [0, 2]
+
+    # case 2: 'categorical_feature' keyword arg passed, but identical to what's in params
+    # result: should succeed and not warn
+    with warnings.catch_warnings(record=True) as w:
+        warnings.simplefilter("always")
+        loaded_bst_new = loaded_bst.refit(X_new, y_new, categorical_feature=[0, 2])
+        assert loaded_bst_new.params["categorical_column"] == [0, 2]
+        if w:
+            assert not any(
+                re.search(r"has been found in .*params.* and will be ignored", str(warning.message)) for warning in w
+            )
+
+    # case 3: 'categorical_feature' keyword arg passed, different value
+    # result: informative error
+    with pytest.raises(
+        lgb.basic.LightGBMError,
+        match=re.escape("Using refit() to change which columns are treated as categorical is not supported"),
+    ):
+        loaded_bst_new = loaded_bst.refit(X_new, y_new, categorical_feature=[0, 1])
